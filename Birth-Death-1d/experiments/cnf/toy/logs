@@ -1,0 +1,560 @@
+c:\Users\shark\Desktop\Birth-Death 1d\trainToyOTflow.py
+# trainToyOTflow.py
+# training driver for the two-dimensional toy problems
+import argparse
+import os
+import time
+import torch
+import datetime
+import torch.optim as optim
+import numpy as np
+import math
+import lib.toy_data as toy_data
+import lib.utils as utils
+from lib.utils import count_parameters
+# from src.plotter import plot_1d
+from src.OTFlowProblem import *
+import config
+
+cf = config.getconfig()
+
+if cf.gpu: # if gpu on platform
+    def_viz_freq = 100
+    def_batch    = 4096
+    def_niter    = 1500
+else:  # if no gpu on platform, assume debugging on a local cpu
+    def_viz_freq = 100
+    def_batch    = 2048
+    def_niter    = 1000
+
+parser = argparse.ArgumentParser('OT-Flow')
+parser.add_argument(
+    '--data', choices=['swissroll', '8gaussians', 'pinwheel', 'circles', 'moons', '2spirals', 'checkerboard', 'rings'],
+    type=str, default='8gaussians'
+)
+
+parser.add_argument("--nt"    , type=int, default=8, help="number of time steps")
+parser.add_argument("--nt_val", type=int, default=8, help="number of time steps for validation")
+parser.add_argument('--alph'  , type=str, default='1.0,100.0,0.0,1.0')
+parser.add_argument('--m'     , type=int, default=32)
+parser.add_argument('--nTh'   , type=int, default=2)
+
+parser.add_argument('--niters'        , type=int  , default=def_niter)
+parser.add_argument('--batch_size'    , type=int  , default=def_batch)
+parser.add_argument('--val_batch_size', type=int  , default=def_batch)
+
+parser.add_argument('--lr'          , type=float, default=0.1)
+parser.add_argument("--drop_freq"   , type=int  , default=100, help="how often to decrease learning rate")
+parser.add_argument('--weight_decay', type=float, default=0.0)
+parser.add_argument('--lr_drop'     , type=float, default=2.0)
+parser.add_argument('--optim'       , type=str  , default='adam', choices=['adam'])
+parser.add_argument('--prec'        , type=str  , default='single', choices=['single','double'], help="single or double precision")
+
+parser.add_argument('--save'    , type=str, default='experiments/cnf/toy')
+parser.add_argument('--viz_freq', type=int, default=def_viz_freq)
+parser.add_argument('--val_freq', type=int, default=1)
+parser.add_argument('--gpu'     , type=int, default=0)
+parser.add_argument('--sample_freq', type=int, default=25)
+
+
+args = parser.parse_args()
+
+args.alph = [float(item) for item in args.alph.split(',')]
+
+# get precision type
+if args.prec =='double':
+    prec = torch.float64
+else:
+    prec = torch.float32
+
+# get timestamp for saving models
+start_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+
+# logger
+utils.makedirs(args.save)
+logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+logger.info("start time: " + start_time)
+logger.info(args)
+
+device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
+
+
+def compute_loss(net, x, nt):
+    Jc , cs = OTFlowProblem(x, net, [0,1], nt=nt, stepper="rk4", alph=net.alph)
+    return Jc, cs
+
+
+if __name__ == '__main__':
+
+    torch.set_default_dtype(prec)
+    cvt = lambda x: x.type(prec).to(device, non_blocking=True)
+
+    # neural network for the potential function Phi
+    d      = 1
+    alph   = args.alph
+    nt     = args.nt
+    nt_val = args.nt_val
+    nTh    = args.nTh
+    m      = args.m
+    net = Phi(nTh=nTh, m=args.m, d=d, alph=alph)
+    net = net.to(prec).to(device)
+
+    optim = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay ) # lr=0.04 good
+
+    logger.info(net)
+    logger.info("-------------------------")
+    logger.info("DIMENSION={:}  m={:}  nTh={:}   alpha={:}".format(d,m,nTh,alph))
+    logger.info("nt={:}   nt_val={:}".format(nt,nt_val))
+    logger.info("Number of trainable parameters: {}".format(count_parameters(net)))
+    logger.info("-------------------------")
+    logger.info(str(optim)) # optimizer info
+    logger.info("data={:} batch_size={:} gpu={:}".format(args.data, args.batch_size, args.gpu))
+    logger.info("maxIters={:} val_freq={:} viz_freq={:}".format(args.niters, args.val_freq, args.viz_freq))
+    logger.info("saveLocation = {:}".format(args.save))
+    logger.info("-------------------------\n")
+
+    end = time.time()
+    best_loss = float('inf')
+    bestParams = None
+
+    # x0 = toy_data.inf_train_gen(args.data, batch_size=args.batch_size)
+    x0=torch.randn(args.batch_size,1)-3
+    x0 = cvt(x0)
+
+    def Gaussian(x,mu,sigma):
+        return 1/(math.sqrt(2*math.pi*sigma)) *math.exp(-math.pow(x-mu,2)/(2*sigma*sigma))
+
+
+    # x0val = toy_data.inf_train_gen(args.data, batch_size=args.val_batch_size)
+    x0val=torch.randn(args.batch_size,1)-3
+    x0val = cvt(x0val)
+
+    log_msg = (
+        '{:5s}  {:6s}   {:9s}  {:9s}  {:9s}  {:9s}      {:9s}  {:9s}  {:9s}  {:9s}  '.format(
+            'iter', ' time','loss', 'L (L_2)', 'C (loss)', 'R (HJB)', 'valLoss', 'valL', 'valC', 'valR'
+        )
+    )
+    logger.info(log_msg)
+
+    time_meter = utils.AverageMeter()
+
+    net.train()
+    for itr in range(1, args.niters + 1):
+        # train
+        optim.zero_grad()
+        loss, costs  = compute_loss(net, x0, nt=nt)
+        loss.backward()
+        optim.step()
+
+        time_meter.update(time.time() - end)
+
+        log_message = (
+            '{:05d}  {:6.3f}   {:9.3e}  {:9.3e}  {:9.3e}  {:9.3e}  '.format(
+                itr, time_meter.val , loss, costs[0], costs[1], costs[2]
+            )
+        )
+
+        # validate
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                net.eval()
+                test_loss, test_costs = compute_loss(net, x0val, nt=nt_val)
+
+                # add to print message
+                log_message += '    {:9.3e}  {:9.3e}  {:9.3e}  {:9.3e} '.format(
+                    test_loss, test_costs[0], test_costs[1], test_costs[2]
+                )
+
+                # save best set of parameters
+                if test_loss.item() < best_loss:
+                    best_loss   = test_loss.item()
+                    best_costs = test_costs
+                    utils.makedirs(args.save)
+                    best_params = net.state_dict()
+                    torch.save({
+                        'args': args,
+                        'state_dict': best_params,
+                    }, os.path.join(args.save, start_time + '_{:}_alph{:}_{:}_m{:}_checkpt.pth'.format(args.data,int(alph[1]),int(alph[2]),m)))
+                    net.train()
+
+        logger.info(log_message) # print iteration
+
+        if itr ==10:
+            with torch.no_grad():
+                net.eval()
+                curr_state = net.state_dict()
+                net.load_state_dict(best_params)
+
+                nSamples = 100
+                p_samples = cvt(torch.randn(nSamples,1)-3)
+             
+
+                sPath = os.path.join(args.save, 'figs', start_time + '_{:04d}.png'.format(itr))
+                plot_1d(net, p_samples, nt_val, sPath, sTitle='{:s}  -  loss {:.2f}  ,  C {:.2f}  ,  alph {:.1f} {:.1f}  '
+                            ' nt {:d}   m {:d}  nTh {:d} itr {:d} '.format(args.data, best_loss, best_costs[1], alph[1], alph[2], nt, m, nTh,itr))
+                net.load_state_dict(curr_state)
+                net.train()
+                        
+
+       
+        # if itr % args.viz_freq == 0:
+        #     with torch.no_grad():
+        #         net.eval()
+        #         curr_state = net.state_dict()
+        #         net.load_state_dict(best_params)
+
+        #         nSamples = 100
+        #         p_samples = cvt(torch.randn(nSamples,1)-3)
+        # #       
+
+        #         sPath = os.path.join(args.save, 'figs', start_time + '_{:04d}.png'.format(itr))
+        #         plot_1d(net, p_samples, nt_val, sPath, sTitle='{:s}  -  loss {:.2f}  ,  C {:.2f}  ,  alph {:.1f} {:.1f}  '
+        #                     ' nt {:d}   m {:d}  nTh {:d} itr {:d} '.format(args.data, best_loss, best_costs[1], alph[1], alph[2], nt, m, nTh,itr))
+
+        #         net.load_state_dict(curr_state)
+        #         net.train()
+
+        # shrink step size
+        if itr % args.drop_freq == 0:
+            for p in optim.param_groups:
+                p['lr'] /= args.lr_drop
+            print("lr: ", p['lr'])
+
+        # resample data
+        if itr % args.sample_freq == 0:
+            # resample data [nSamples, d+1]
+            logger.info("resampling")
+            x0 = torch.randn(args.batch_size,1)-3  # load data batch
+            x0 = cvt(x0)  # convert to torch, type and gpu
+
+        end = time.time()
+
+    logger.info("Training Time: {:} seconds".format(time_meter.sum))
+    logger.info('Training has finished.  ' + start_time + '_{:}_alph{:}_{:}_m{:}_checkpt.pth'.format(args.data,int(alph[1]),int(alph[2]),m))
+
+
+
+
+
+
+start time: 2020_10_18_23_32_32
+Namespace(alph=[1.0, 100.0, 0.0, 1.0], batch_size=4096, data='8gaussians', drop_freq=100, gpu=0, lr=0.1, lr_drop=2.0, m=32, nTh=2, niters=1500, nt=8, nt_val=8, optim='adam', prec='single', sample_freq=25, save='experiments/cnf/toy', val_batch_size=4096, val_freq=1, viz_freq=100, weight_decay=0.0)
+Phi(
+  (c): Linear(in_features=2, out_features=1, bias=True)
+  (w): Linear(in_features=32, out_features=1, bias=False)
+  (N): ResNN(
+    (layers): ModuleList(
+      (0): Linear(in_features=2, out_features=32, bias=True)
+      (1): Linear(in_features=32, out_features=32, bias=True)
+    )
+  )
+)
+-------------------------
+DIMENSION=1  m=32  nTh=2   alpha=[1.0, 100.0, 0.0, 1.0]
+nt=8   nt_val=8
+Number of trainable parameters: 1191
+-------------------------
+Adam (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    eps: 1e-08
+    lr: 0.1
+    weight_decay: 0.0
+)
+data=8gaussians batch_size=4096 gpu=0
+maxIters=1500 val_freq=1 viz_freq=100
+saveLocation = experiments/cnf/toy
+-------------------------
+
+iter    time    loss       L (L_2)    C (loss)   R (HJB)        valLoss    valL       valC       valR       
+00001   1.311   6.715e+02  1.314e+01  6.583e+00  1.438e+01      7.191e+02  1.431e+01  7.048e+00  2.198e+01 
+00002   0.918   7.189e+02  1.439e+01  7.045e+00  2.204e+01      3.461e+02  6.353e+00  3.397e+00  1.893e+01 
+00003   0.908   3.459e+02  6.409e+00  3.395e+00  1.890e+01      2.212e+02  6.510e+00  2.147e+00  2.285e+01 
+00004   0.953   2.204e+02  6.562e+00  2.138e+00  2.280e+01      3.340e+02  8.559e-01  3.332e+00  3.002e+01 
+00005   0.958   3.362e+02  8.670e-01  3.353e+00  3.000e+01      2.776e+02  9.666e+00  2.679e+00  2.586e+01 
+00006   0.904   2.759e+02  9.709e+00  2.662e+00  2.584e+01      2.326e+02  8.103e+00  2.245e+00  2.270e+01 
+00007   0.930   2.308e+02  8.149e+00  2.227e+00  2.267e+01      1.841e+02  3.166e+00  1.810e+00  2.076e+01 
+00008   0.926   1.839e+02  3.185e+00  1.807e+00  2.075e+01      2.241e+02  1.885e+00  2.222e+00  1.863e+01 
+00009   0.965   2.244e+02  1.896e+00  2.225e+00  1.863e+01      1.852e+02  2.860e+00  1.823e+00  1.806e+01 
+00010   0.923   1.852e+02  2.879e+00  1.823e+00  1.805e+01      1.689e+02  4.746e+00  1.642e+00  1.773e+01 
+c:\Users\shark\Desktop\Birth-Death 1d\trainToyOTflow.py
+# trainToyOTflow.py
+# training driver for the two-dimensional toy problems
+import argparse
+import os
+import time
+import torch
+import datetime
+import torch.optim as optim
+import numpy as np
+import math
+import lib.toy_data as toy_data
+import lib.utils as utils
+from lib.utils import count_parameters
+# from src.plotter import plot_1d
+from src.OTFlowProblem import *
+import config
+
+cf = config.getconfig()
+
+if cf.gpu: # if gpu on platform
+    def_viz_freq = 100
+    def_batch    = 4096
+    def_niter    = 1500
+else:  # if no gpu on platform, assume debugging on a local cpu
+    def_viz_freq = 100
+    def_batch    = 2048
+    def_niter    = 1000
+
+parser = argparse.ArgumentParser('OT-Flow')
+parser.add_argument(
+    '--data', choices=['swissroll', '8gaussians', 'pinwheel', 'circles', 'moons', '2spirals', 'checkerboard', 'rings'],
+    type=str, default='8gaussians'
+)
+
+parser.add_argument("--nt"    , type=int, default=8, help="number of time steps")
+parser.add_argument("--nt_val", type=int, default=8, help="number of time steps for validation")
+parser.add_argument('--alph'  , type=str, default='1.0,100.0,0.0,1.0')
+parser.add_argument('--m'     , type=int, default=32)
+parser.add_argument('--nTh'   , type=int, default=2)
+
+parser.add_argument('--niters'        , type=int  , default=def_niter)
+parser.add_argument('--batch_size'    , type=int  , default=def_batch)
+parser.add_argument('--val_batch_size', type=int  , default=def_batch)
+
+parser.add_argument('--lr'          , type=float, default=0.1)
+parser.add_argument("--drop_freq"   , type=int  , default=100, help="how often to decrease learning rate")
+parser.add_argument('--weight_decay', type=float, default=0.0)
+parser.add_argument('--lr_drop'     , type=float, default=2.0)
+parser.add_argument('--optim'       , type=str  , default='adam', choices=['adam'])
+parser.add_argument('--prec'        , type=str  , default='single', choices=['single','double'], help="single or double precision")
+
+parser.add_argument('--save'    , type=str, default='experiments/cnf/toy')
+parser.add_argument('--viz_freq', type=int, default=def_viz_freq)
+parser.add_argument('--val_freq', type=int, default=1)
+parser.add_argument('--gpu'     , type=int, default=0)
+parser.add_argument('--sample_freq', type=int, default=25)
+
+
+args = parser.parse_args()
+
+args.alph = [float(item) for item in args.alph.split(',')]
+
+# get precision type
+if args.prec =='double':
+    prec = torch.float64
+else:
+    prec = torch.float32
+
+# get timestamp for saving models
+start_time = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
+
+# logger
+utils.makedirs(args.save)
+logger = utils.get_logger(logpath=os.path.join(args.save, 'logs'), filepath=os.path.abspath(__file__))
+logger.info("start time: " + start_time)
+logger.info(args)
+
+device = torch.device('cuda:' + str(args.gpu) if torch.cuda.is_available() else 'cpu')
+
+
+def compute_loss(net, x, nt):
+    Jc , cs = OTFlowProblem(x, net, [0,1], nt=nt, stepper="rk4", alph=net.alph)
+    return Jc, cs
+
+
+if __name__ == '__main__':
+
+    torch.set_default_dtype(prec)
+    cvt = lambda x: x.type(prec).to(device, non_blocking=True)
+
+    # neural network for the potential function Phi
+    d      = 1
+    alph   = args.alph
+    nt     = args.nt
+    nt_val = args.nt_val
+    nTh    = args.nTh
+    m      = args.m
+    net = Phi(nTh=nTh, m=args.m, d=d, alph=alph)
+    net = net.to(prec).to(device)
+
+    optim = torch.optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay ) # lr=0.04 good
+
+    logger.info(net)
+    logger.info("-------------------------")
+    logger.info("DIMENSION={:}  m={:}  nTh={:}   alpha={:}".format(d,m,nTh,alph))
+    logger.info("nt={:}   nt_val={:}".format(nt,nt_val))
+    logger.info("Number of trainable parameters: {}".format(count_parameters(net)))
+    logger.info("-------------------------")
+    logger.info(str(optim)) # optimizer info
+    logger.info("data={:} batch_size={:} gpu={:}".format(args.data, args.batch_size, args.gpu))
+    logger.info("maxIters={:} val_freq={:} viz_freq={:}".format(args.niters, args.val_freq, args.viz_freq))
+    logger.info("saveLocation = {:}".format(args.save))
+    logger.info("-------------------------\n")
+
+    end = time.time()
+    best_loss = float('inf')
+    bestParams = None
+
+    # x0 = toy_data.inf_train_gen(args.data, batch_size=args.batch_size)
+    x0=torch.randn(args.batch_size,1)-3
+    x0 = cvt(x0)
+
+    def Gaussian(x,mu,sigma):
+        return 1/(math.sqrt(2*math.pi*sigma)) *math.exp(-math.pow(x-mu,2)/(2*sigma*sigma))
+
+
+    # x0val = toy_data.inf_train_gen(args.data, batch_size=args.val_batch_size)
+    x0val=torch.randn(args.batch_size,1)-3
+    x0val = cvt(x0val)
+
+    log_msg = (
+        '{:5s}  {:6s}   {:9s}  {:9s}  {:9s}  {:9s}      {:9s}  {:9s}  {:9s}  {:9s}  '.format(
+            'iter', ' time','loss', 'L (L_2)', 'C (loss)', 'R (HJB)', 'valLoss', 'valL', 'valC', 'valR'
+        )
+    )
+    logger.info(log_msg)
+
+    time_meter = utils.AverageMeter()
+
+    net.train()
+    for itr in range(1, args.niters + 1):
+        # train
+        optim.zero_grad()
+        loss, costs  = compute_loss(net, x0, nt=nt)
+        loss.backward()
+        optim.step()
+
+        time_meter.update(time.time() - end)
+
+        log_message = (
+            '{:05d}  {:6.3f}   {:9.3e}  {:9.3e}  {:9.3e}  {:9.3e}  '.format(
+                itr, time_meter.val , loss, costs[0], costs[1], costs[2]
+            )
+        )
+
+        # validate
+        if itr % args.val_freq == 0 or itr == args.niters:
+            with torch.no_grad():
+                net.eval()
+                test_loss, test_costs = compute_loss(net, x0val, nt=nt_val)
+
+                # add to print message
+                log_message += '    {:9.3e}  {:9.3e}  {:9.3e}  {:9.3e} '.format(
+                    test_loss, test_costs[0], test_costs[1], test_costs[2]
+                )
+
+                # save best set of parameters
+                if test_loss.item() < best_loss:
+                    best_loss   = test_loss.item()
+                    best_costs = test_costs
+                    utils.makedirs(args.save)
+                    best_params = net.state_dict()
+                    torch.save({
+                        'args': args,
+                        'state_dict': best_params,
+                    }, os.path.join(args.save, start_time + '_{:}_alph{:}_{:}_m{:}_checkpt.pth'.format(args.data,int(alph[1]),int(alph[2]),m)))
+                    net.train()
+
+        logger.info(log_message) # print iteration
+
+        if itr ==10:
+            with torch.no_grad():
+                net.eval()
+                curr_state = net.state_dict()
+                net.load_state_dict(best_params)
+
+                nSamples = 100
+                p_samples = cvt(torch.randn(nSamples,1)-3)
+             
+
+                sPath = os.path.join(args.save, 'figs', start_time + '_{:04d}.png'.format(itr))
+                plot_1d(net, p_samples, nt_val, sPath, sTitle='{:s}  -  loss {:.2f}  ,  C {:.2f}  ,  alph {:.1f} {:.1f}  '
+                            ' nt {:d}   m {:d}  nTh {:d} itr {:d} '.format(args.data, best_loss, best_costs[1], alph[1], alph[2], nt, m, nTh,itr))
+                net.load_state_dict(curr_state)
+                net.train()
+                        
+
+       
+        # if itr % args.viz_freq == 0:
+        #     with torch.no_grad():
+        #         net.eval()
+        #         curr_state = net.state_dict()
+        #         net.load_state_dict(best_params)
+
+        #         nSamples = 100
+        #         p_samples = cvt(torch.randn(nSamples,1)-3)
+        # #       
+
+        #         sPath = os.path.join(args.save, 'figs', start_time + '_{:04d}.png'.format(itr))
+        #         plot_1d(net, p_samples, nt_val, sPath, sTitle='{:s}  -  loss {:.2f}  ,  C {:.2f}  ,  alph {:.1f} {:.1f}  '
+        #                     ' nt {:d}   m {:d}  nTh {:d} itr {:d} '.format(args.data, best_loss, best_costs[1], alph[1], alph[2], nt, m, nTh,itr))
+
+        #         net.load_state_dict(curr_state)
+        #         net.train()
+
+        # shrink step size
+        if itr % args.drop_freq == 0:
+            for p in optim.param_groups:
+                p['lr'] /= args.lr_drop
+            print("lr: ", p['lr'])
+
+        # resample data
+        if itr % args.sample_freq == 0:
+            # resample data [nSamples, d+1]
+            logger.info("resampling")
+            x0 = torch.randn(args.batch_size,1)-3  # load data batch
+            x0 = cvt(x0)  # convert to torch, type and gpu
+
+        end = time.time()
+
+    logger.info("Training Time: {:} seconds".format(time_meter.sum))
+    logger.info('Training has finished.  ' + start_time + '_{:}_alph{:}_{:}_m{:}_checkpt.pth'.format(args.data,int(alph[1]),int(alph[2]),m))
+
+
+
+
+
+
+start time: 2020_10_18_23_33_49
+Namespace(alph=[1.0, 100.0, 0.0, 1.0], batch_size=4096, data='8gaussians', drop_freq=100, gpu=0, lr=0.1, lr_drop=2.0, m=32, nTh=2, niters=1500, nt=8, nt_val=8, optim='adam', prec='single', sample_freq=25, save='experiments/cnf/toy', val_batch_size=4096, val_freq=1, viz_freq=100, weight_decay=0.0)
+Phi(
+  (c): Linear(in_features=2, out_features=1, bias=True)
+  (w): Linear(in_features=32, out_features=1, bias=False)
+  (N): ResNN(
+    (layers): ModuleList(
+      (0): Linear(in_features=2, out_features=32, bias=True)
+      (1): Linear(in_features=32, out_features=32, bias=True)
+    )
+  )
+)
+-------------------------
+DIMENSION=1  m=32  nTh=2   alpha=[1.0, 100.0, 0.0, 1.0]
+nt=8   nt_val=8
+Number of trainable parameters: 1191
+-------------------------
+Adam (
+Parameter Group 0
+    amsgrad: False
+    betas: (0.9, 0.999)
+    eps: 1e-08
+    lr: 0.1
+    weight_decay: 0.0
+)
+data=8gaussians batch_size=4096 gpu=0
+maxIters=1500 val_freq=1 viz_freq=100
+saveLocation = experiments/cnf/toy
+-------------------------
+
+iter    time    loss       L (L_2)    C (loss)   R (HJB)        valLoss    valL       valC       valR       
+00001   1.274   8.128e+02  1.551e+01  7.973e+00  1.952e+01      8.176e+02  1.655e+01  8.010e+00  2.922e+01 
+00002   0.904   8.176e+02  1.646e+01  8.012e+00  2.914e+01      4.463e+02  8.443e+00  4.378e+00  2.584e+01 
+00003   0.966   4.463e+02  8.388e+00  4.379e+00  2.585e+01      2.576e+02  4.990e+00  2.526e+00  3.094e+01 
+00004   0.907   2.576e+02  4.973e+00  2.527e+00  3.096e+01      2.038e+02  6.269e+00  1.976e+00  3.589e+01 
+00005   0.947   2.041e+02  6.259e+00  1.978e+00  3.589e+01      3.091e+02  9.926e-01  3.081e+00  4.152e+01 
+00006   0.909   3.085e+02  9.890e-01  3.075e+00  4.152e+01      2.248e+02  8.122e+00  2.167e+00  3.090e+01 
+00007   0.968   2.252e+02  8.112e+00  2.171e+00  3.090e+01      2.019e+02  7.258e+00  1.946e+00  2.576e+01 
+00008   0.942   2.025e+02  7.242e+00  1.953e+00  2.577e+01      1.794e+02  3.001e+00  1.764e+00  2.548e+01 
+00009   0.969   1.794e+02  2.993e+00  1.764e+00  2.548e+01      2.018e+02  2.183e+00  1.996e+00  2.370e+01 
+00010   0.967   2.014e+02  2.175e+00  1.993e+00  2.370e+01      1.644e+02  3.375e+00  1.610e+00  2.213e+01 
