@@ -42,57 +42,57 @@ def OTFlowProblem(x, Phi, tspan , nt, stepper="rk4", alph =[1.0,1.0,1.0] ):
     h = (tspan[1]-tspan[0]) / nt
 
     # initialize "hidden" vector to propogate with all the additional dimensions for all the ODEs
-    z = pad(x, (0, 5, 0, 0), value=0)
+    z = pad(x, (0, 3, 0, 0), value=0)
 
     tk = tspan[0]
     g=torch.zeros(z.size(0),1).cuda()
 
     if stepper=='rk4':
         Phi_store=torch.zeros(z.size(0),1).cuda()
-        d=z.size(1)-5
+        d=z.size(1)-3
         # z    0 to d-1 is space , d is log
         for k in range(nt):
-            z = stepRK4(odefun, z, Phi, alph, tk, tk + h)
-            one_tk=tk*torch.ones(z.size(0),1).cuda()
-            x=z[:,:d]
-            # print(x.size())
-            Phi_store=Phi(torch.cat((x,one_tk),dim=1))
+            z = stepRK4(odefun_3extra, z, Phi, alph, tk, tk + h)
+            # one_tk=tk*torch.ones(z.size(0),1).cuda()
+            # x=z[:,:d]
+            # # print(x.size())
+            # Phi_store=Phi(torch.cat((x,one_tk),dim=1))
 
         
-            Phi_judge = (Phi_store-torch.mean(Phi_store))*(1/nt)*0.01
+            # Phi_judge = (Phi_store-torch.mean(Phi_store))*(1/nt)*0.01
 
-            r=torch.rand(z.size(0),1).cuda()
-            kill_inds=(-Phi_judge>r).nonzero()[:,0]
-            dup_inds=(Phi_judge>r).nonzero()[:,0]
-            n_cloned = len(dup_inds)
+            # r=torch.rand(z.size(0),1).cuda()
+            # kill_inds=(-Phi_judge>r).nonzero()[:,0]
+            # dup_inds=(Phi_judge>r).nonzero()[:,0]
+            # n_cloned = len(dup_inds)
 
-            z = torch.cat((z,z[dup_inds,:].reshape(-1,d+5)),dim=0)
-            # Phi_store = torch.cat((Phi_store,Phi_store[dup_inds,:].reshape(-1,1)),dim=0)
-            # g = torch.cat((g,g[dup_inds,:].reshape(-1,1)),dim=0)
+            # z = torch.cat((z,z[dup_inds,:].reshape(-1,d+5)),dim=0)
+            # # Phi_store = torch.cat((Phi_store,Phi_store[dup_inds,:].reshape(-1,1)),dim=0)
+            # # g = torch.cat((g,g[dup_inds,:].reshape(-1,1)),dim=0)
 
-            survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds.cpu().numpy())), dtype=torch.long).cuda()
-            z = torch.index_select(z,0,survivor_inds)
-            # Phi_store = torch.index_select(Phi_store,0,survivor_inds)
-            # g = torch.index_select(g,0,survivor_inds)
+            # survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds.cpu().numpy())), dtype=torch.long).cuda()
+            # z = torch.index_select(z,0,survivor_inds)
+            # # Phi_store = torch.index_select(Phi_store,0,survivor_inds)
+            # # g = torch.index_select(g,0,survivor_inds)
 
 
 
-            delta_n = n_cloned-len(kill_inds)
-            if delta_n<0:
-                clone_inds = torch.randint(z.size(0)+delta_n, (-delta_n,), dtype=torch.long).cuda()
-                z = torch.cat((z,torch.index_select(z,0,clone_inds)))
-                # Phi_store = torch.cat((Phi_store,torch.index_select(Phi_store,0,clone_inds)))
-                # g = torch.cat((g,torch.index_select(g,0,clone_inds)))
+            # delta_n = n_cloned-len(kill_inds)
+            # if delta_n<0:
+            #     clone_inds = torch.randint(z.size(0)+delta_n, (-delta_n,), dtype=torch.long).cuda()
+            #     z = torch.cat((z,torch.index_select(z,0,clone_inds)))
+            #     # Phi_store = torch.cat((Phi_store,torch.index_select(Phi_store,0,clone_inds)))
+            #     # g = torch.cat((g,torch.index_select(g,0,clone_inds)))
 
 
                 
             
-            if delta_n>0:
-                kill_inds = (torch.randperm(z.shape[0], dtype=torch.int)[:delta_n]).numpy()
-                survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds)), dtype=torch.long).cuda()
-                z = torch.index_select(z,0,survivor_inds)
-                # Phi_store = torch.index_select(Phi_store,0,survivor_inds)
-                # g = torch.index_select(g,0,survivor_inds)
+            # if delta_n>0:
+            #     kill_inds = (torch.randperm(z.shape[0], dtype=torch.int)[:delta_n]).numpy()
+            #     survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds)), dtype=torch.long).cuda()
+            #     z = torch.index_select(z,0,survivor_inds)
+            #     # Phi_store = torch.index_select(Phi_store,0,survivor_inds)
+            #     # g = torch.index_select(g,0,survivor_inds)
 
 
             
@@ -106,12 +106,12 @@ def OTFlowProblem(x, Phi, tspan , nt, stepper="rk4", alph =[1.0,1.0,1.0] ):
             tk += h
 
     # ASSUME all examples are equally weighted
-    costL  = torch.mean(z[:,-4])   ## 1/2 ||v^2||
+    costL  = torch.mean(z[:,-2])   ## 1/2 ||v^2||
     costC  = torch.mean(C(z))   
-    costR  = torch.mean(z[:,-3])   ## regulization 
-    cost_g=torch.mean(z[:,-2])    ##  1/2 g^2
-    cost_alpha_tuta=torch.mean(z[:,-1])
-    cs = [costL, costC+cost_alpha_tuta, costR, cost_g]
+    costR  = torch.mean(z[:,-1])   ## regulization 
+    # cost_g=torch.mean(z[:,-2])    ##  1/2 g^2
+    # cost_alpha_tuta=torch.mean(z[:,-1])
+    cs = [costL, costC, costR]
     # z=z[:,:z.size(1)-1]
     # return dot(cs, alph)  , cs
     return sum(i[0] * i[1] for i in zip(cs, alph)) , cs
@@ -162,7 +162,7 @@ def stepRK1(odefun, z, Phi, alph, t0, t1):
     return z
 
 
-def integrate(x, net, tspan , nt, stepper="rk4", alph =[1.0,1.0,1.0] ):
+def integrate(x, net, tspan , nt, stepper="rk4", alph =[1.0,1.0,1.0,1.0] ):
     """
         perform the time integration in the d-dimensional space
     :param x:       input data tensor nex-by-d
@@ -181,78 +181,79 @@ def integrate(x, net, tspan , nt, stepper="rk4", alph =[1.0,1.0,1.0] ):
 
     # initialize "hidden" vector to propagate with all the additional dimensions for all the ODEs
     d=x.size(1)
-    z = pad(x, (0, 5, 0, 0), value=tspan[0])
-
+    z = pad(x, (0, 3, 0, 0), value=tspan[0])
+    
     tk = tspan[0]
 
     
     zFull = torch.zeros( *z.shape , nt+1, device=x.device, dtype=x.dtype) # make tensor of size z.shape[0], z.shape[1], nt
+    # x_ini = torch.zeros( x.shape , device=x.device, dtype=x.dtype)
     zFull[:,:,0] = z
+    # x_ini=x
 
     if stepper == 'rk4':
         for k in range(nt):
-            zFull[:,:,k+1] = stepRK4(odefun, zFull[:,:,k] , net, alph, tk, tk+h)
-            z=zFull[:,:,k+1]
-            one_tk=tk*torch.ones(z.size(0),1).cuda()
-            x=z[:,:d]
-            # print(x.size())
-            Phi_store=net(torch.cat((x,one_tk),dim=1))
+            zFull[:,:,k+1] = stepRK4(odefun_3extra, zFull[:,:,k] , net, alph, tk, tk+h)
+            # z=zFull[:,:,k+1]
+            # one_tk=tk*torch.ones(z.size(0),1).cuda()
+            # x=z[:,:d]
+            # # print(x.size())
+            # Phi_store=net(torch.cat((x,one_tk),dim=1))
 
 
-            Phi_judge = (Phi_store-torch.mean(Phi_store))*(1/nt)*0.01
+            # Phi_judge = (Phi_store-torch.mean(Phi_store))*(1/nt)*0.01
 
-            r=torch.rand(z.size(0),1).cuda()
-            kill_inds=(-Phi_judge>r).nonzero()[:,0]
-            dup_inds=(Phi_judge>r).nonzero()[:,0]
-            n_cloned = len(dup_inds)
+            # r=torch.rand(z.size(0),1).cuda()
+            # kill_inds=(-Phi_judge>r).nonzero()[:,0]
+            # dup_inds=(Phi_judge>r).nonzero()[:,0]
+            # n_cloned = len(dup_inds)
 
-            z = torch.cat((z,z[dup_inds,:].reshape(-1,d+5)),dim=0)
-                # Phi_store = torch.cat((Phi_store,Phi_store[dup_inds,:].reshape(-1,1)),dim=0)
-                # g = torch.cat((g,g[dup_inds,:].reshape(-1,1)),dim=0)
-
-            survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds.cpu().numpy())), dtype=torch.long).cuda()
-            z = torch.index_select(z,0,survivor_inds)
-                # Phi_store = torch.index_select(Phi_store,0,survivor_inds)
-                # g = torch.index_select(g,0,survivor_inds)
+            # z = torch.cat((z,z[dup_inds,:].reshape(-1,d+5)),dim=0)
+            # # x_ini = torch.cat((x_ini,x_ini[dup_inds,:].reshape(-1,d+5)),dim=0)
 
 
+            # survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds.cpu().numpy())), dtype=torch.long).cuda()
+            # z = torch.index_select(z,0,survivor_inds)
+            # # x_ini = torch.index_select(x_ini,0,survivor_inds)
+             
 
-            delta_n = n_cloned-len(kill_inds)
-            if delta_n<0:
-                clone_inds = torch.randint(z.size(0)+delta_n, (-delta_n,), dtype=torch.long).cuda()
-                z = torch.cat((z,torch.index_select(z,0,clone_inds)))
-                    # Phi_store = torch.cat((Phi_store,torch.index_select(Phi_store,0,clone_inds)))
-                    # g = torch.cat((g,torch.index_select(g,0,clone_inds)))
 
+
+            # delta_n = n_cloned-len(kill_inds)
+            # if delta_n<0:
+            #     clone_inds = torch.randint(z.size(0)+delta_n, (-delta_n,), dtype=torch.long).cuda()
+            #     z = torch.cat((z,torch.index_select(z,0,clone_inds)))
+            #     # x_ini = torch.cat((x_ini,torch.index_select(z,0,clone_inds)))
+                   
 
                 
             
-            if delta_n>0:
-                kill_inds = (torch.randperm(z.shape[0], dtype=torch.int)[:delta_n]).numpy()
-                survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds)), dtype=torch.long).cuda()
-                z = torch.index_select(z,0,survivor_inds)
-                    # Phi_store = torch.index_select(Phi_store,0,survivor_inds)
-                    # g = torch.index_select(g,0,survivor_inds)
+            # if delta_n>0:
+            #     kill_inds = (torch.randperm(z.shape[0], dtype=torch.int)[:delta_n]).numpy()
+            #     survivor_inds = torch.tensor(list(set(range(z.shape[0]))-set(kill_inds)), dtype=torch.long).cuda()
+            #     z = torch.index_select(z,0,survivor_inds)
+            #     # x_ini = torch.index_select(x_ini,0,survivor_inds)
+                
 
-            zFull[:,:,k+1]=z
+            # zFull[:,:,k+1]=z
             tk += h
         
 
             
-    return zFull[:,0:d,:]
+    return zFull[:,0,:] ,zFull[:,1,:]  #output x and log(det)
 
 
 
 
 def C(z):
     """Expected negative log-likelihood; see Eq.(3) in the paper"""
-    d = z.shape[1]-5
+    d = z.shape[1]-3
     l = z[:,d] # log-det
 
     return -( torch.sum(  -0.5 * math.log(2*math.pi) - torch.pow(z[:,0:d],2) / 2  , 1 , keepdims=True ) + l.unsqueeze(1) )
 
 
-def odefun(x, t, net, alph=[1.0,1.0,1.0]):
+def odefun(x, t, net, alph=[1.0,1.0,1.0,1.0]):
     """
     neural ODE combining the characteristics and log-determinant (see Eq. (2)), the transport costs (see Eq. (5)), and
     the HJB regularizer (see Eq. (7)).
@@ -285,7 +286,7 @@ def odefun(x, t, net, alph=[1.0,1.0,1.0]):
 
 
 
-def odefun_3extra(x, t, net, alph=[1.0,1.0,1.0]):
+def odefun_3extra(x, t, net, alph=[1.0,1.0,1.0,1.0]):
     """
     neural ODE combining the characteristics and log-determinant (see Eq. (2)), the transport costs (see Eq. (5)), and
     the HJB regularizer (see Eq. (7)).
@@ -315,6 +316,15 @@ def odefun_3extra(x, t, net, alph=[1.0,1.0,1.0]):
     return torch.cat( (dx,dl,dv,dr) , 1  )
 
 
+def double_Gauss(x):
+    a_1=1/(math.sqrt(2*math.pi*1)) *torch.exp(-torch.pow(x-3,2)/(2*1*1))
+    a_2=1/(math.sqrt(2*math.pi*1)) *torch.exp(-torch.pow(x+3,2)/(2*1*1))
+    
+    return (a_1+a_2)/2
+
+
+
+
 
 def plot_1d(net, x, nt_val, sPath, sTitle=""):
     """
@@ -325,9 +335,33 @@ def plot_1d(net, x, nt_val, sPath, sTitle=""):
 
     d = net.d
     nSamples = x.shape[0]
-    z_full = integrate(x[:, 0:d], net, [0.0, 1.0], nt_val, stepper="rk4", alph=net.alph)
+    z_full,l_det = integrate(x[:, 0:d], net, [0.0, 1.0], nt_val, stepper="rk4", alph=net.alph)
     z_full=torch.squeeze(z_full)  #n_sample * nt+1
+    l_det=torch.exp(torch.squeeze(l_det)).reshape(nSamples,-1)      #n_sample * nt+1
+    rho_ini=double_Gauss(z_full[:,0]).reshape(nSamples,-1)         #n_sample * 1
+    rho_full=rho_ini/l_det
 
+    fig, ax = plt.subplots(5,5,figsize=(25,25))
+    for i in range(5):
+        for j in range(5):
+            k=i*5+j+1
+            ax[i,j].scatter(z_full[:,k-1].cpu().numpy(),rho_full[:,k-1].cpu().numpy(),s=4)
+            ax[i,j].set_ylim(0,1)
+            ax[i,j].set_ylabel("rho (z) ")
+            ax[i,j].set_xlabel("z ")
+
+            # plt.subplot(3,3,k)
+            # plt.scatter(z_full[:,k-1].cpu().numpy(),rho_full[:,k-1].cpu().numpy(),s=4)
+            # plt.ylim((0,0.7))
+            # plt.xlabel("z")
+            # plt.xlabel("rho (z) ")
+            # plt.title
+
+    
+    
+    # plt.show()
+    plt.savefig("image/density/"+sTitle+".jpg")
+    plt.close()
 
 
     
@@ -343,5 +377,5 @@ def plot_1d(net, x, nt_val, sPath, sTitle=""):
         os.makedirs(os.path.dirname(sPath))
     # plt.savefig(sPath, dpi=300)
     # plt.show()
-    plt.savefig("image/"+sTitle+".jpg")
+    plt.savefig("image/trace/"+sTitle+".jpg")
     plt.close()

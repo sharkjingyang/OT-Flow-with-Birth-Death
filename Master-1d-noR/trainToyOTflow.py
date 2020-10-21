@@ -34,7 +34,7 @@ parser.add_argument(
 
 parser.add_argument("--nt"    , type=int, default=8, help="number of time steps")
 parser.add_argument("--nt_val", type=int, default=8, help="number of time steps for validation")
-parser.add_argument('--alph'  , type=str, default='1.0,100.0,0.0,1.0')
+parser.add_argument('--alph'  , type=str, default='1.0,100.0,0.0')
 parser.add_argument('--m'     , type=int, default=32)
 parser.add_argument('--nTh'   , type=int, default=2)
 
@@ -175,14 +175,32 @@ if __name__ == '__main__':
 
         logger.info(log_message) # print iteration
                         
-       
+
+        # if itr ==10:
+        #     with torch.no_grad():
+        #         net.eval()
+        #         curr_state = net.state_dict()
+        #         net.load_state_dict(best_params)
+
+        #         nSamples = 1000
+        #         p_samples = cvt(torch.randn(nSamples,1)-3+6*((torch.rand(nSamples,1))>0.5).float())
+        # #       
+
+        #         sPath = os.path.join(args.save, 'figs', start_time + '_{:04d}.png'.format(itr))
+        #         plot_1d(net, p_samples, nt_val, sPath, sTitle='{:s}  -  loss {:.2f}  ,  C {:.2f}  ,  alph {:.1f} {:.1f}  '
+        #                     ' nt {:d}   m {:d}  nTh {:d} itr {:d} '.format(args.data, best_loss, best_costs[1], alph[1], alph[2], nt, m, nTh,itr))
+
+        #         net.load_state_dict(curr_state)
+        #         net.train()
+
+
         if itr % args.viz_freq == 0:
             with torch.no_grad():
                 net.eval()
                 curr_state = net.state_dict()
                 net.load_state_dict(best_params)
 
-                nSamples = 100
+                nSamples = 4096
                 p_samples = cvt(torch.randn(nSamples,1)-3+6*((torch.rand(nSamples,1))>0.5).float())
         #       
 
